@@ -1,1 +1,145 @@
+---
+title: "Water Quality Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: cosmo
+    source_code: embed
+---
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(leaflet)
+library(plotly)
+library(dplyr)
+library(tidyr)
+library(dataRetrieval)
+library(DT)
+library(lubridate)
 
+# Source the data fetching script
+source("scripts/fetch_data.R")
+
+# Fetch data (using Arizona as example, 2023-present)
+wq_list <- fetch_usgs_wq_data(state_cd = "AZ", 
+                              start_date = "2023-01-01",
+                              parameter_codes = c("00010", "00300", "00400"))
+
+wq_data <- wq_list$data
+sites <- wq_list$sites
+
+# Clean and prepare data
+wq_clean <- wq_data %>%
+  mutate(date = as.Date(sample_dt),
+         year = year(date),
+         month = month(date, label = TRUE)) %>%
+  select(site_no, station_nm, date, year, month,
+         dec_lat_va, dec_long_va, parm_cd, result_va) %>%
+  filter(!is.na(result_va))
+
+# Add parameter names
+param_names <- data.frame(
+  parm_cd = c("00010", "00300", "00400"),
+  parameter = c("Temperature (°C)", "Dissolved Oxygen (mg/L)", "pH")
+)
+
+wq_clean <- left_join(wq_clean, param_names, by = "parm_cd")
+```
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+
+### Map of Monitoring Sites
+```{r}
+# Create color palette for parameters
+pal <- colorFactor(
+  palette = c("#1f77b4", "#ff7f0e", "#2ca02c"),
+  domain = wq_clean$parameter
+)
+
+# Get unique sites with their info
+site_summary <- wq_clean %>%
+  group_by(site_no, station_nm, dec_lat_va, dec_long_va) %>%
+  summarise(
+    n_samples = n(),
+    parameters = paste(unique(parameter), collapse = ", "),
+    .groups = "drop"
+  )
+
+# Create leaflet map
+leaflet(site_summary) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~dec_long_va,
+    lat = ~dec_lat_va,
+    radius = 6,
+    color = "#3d4f3a",
+    fillColor = "#6b8f5e",
+    fillOpacity = 0.7,
+    popup = ~paste0(
+      "<b>", station_nm, "</b><br/>",
+      "Site ID: ", site_no, "<br/>",
+      "Samples: ", n_samples, "<br/>",
+      "Parameters: ", parameters
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    title = "Monitoring Sites",
+    labels = paste0(nrow(site_summary), " sites"),
+    colors = "#6b8f5e"
+  )
+```
+
+### Summary Statistics
+```{r}
+summary_stats <- wq_clean %>%
+  group_by(parameter) %>%
+  summarise(
+    `Sample Count` = n(),
+    `Mean` = round(mean(result_va, na.rm = TRUE), 2),
+    `Median` = round(median(result_va, na.rm = TRUE), 2),
+    `Min` = round(min(result_va, na.rm = TRUE), 2),
+    `Max` = round(max(result_va, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+datatable(summary_stats, 
+          options = list(pageLength = 5, dom = 't'),
+          rownames = FALSE)
+```
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+
+### Water Quality Trends Over Time
+```{r}
+plot_ly(wq_clean, x = ~date, y = ~result_va, color = ~parameter,
+        type = 'scatter', mode = 'markers',
+        marker = list(size = 8, opacity = 0.6),
+        hoverinfo = 'text',
+        text = ~paste0(
+          parameter, "<br>",
+          "Value: ", round(result_va, 2), "<br>",
+          "Site: ", station_nm, "<br>",
+          "Date: ", date
+        )) %>%
+  layout(
+    title = "Water Quality Parameters by Date",
+    xaxis = list(title = "Date"),
+    yaxis = list(title = "Measurement Value"),
+    hovermode = 'closest',
+    legend = list(orientation = 'h', y = -0.2)
+  )
+```
+
+### Distribution by Parameter
+```{r}
+plot_ly(wq_clean, y = ~result_va, color = ~parameter, type = "box") %>%
+  layout(
+    title = "Distribution of Water Quality Parameters",
+    yaxis = list(title = "Measurement Value"),
+    xaxis = list(title = ""),
+    showlegend = FALSE
+  )
+```
